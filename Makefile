@@ -37,15 +37,16 @@ ARCH= -gencode arch=compute_30,code=sm_30 \
 
 VPATH=./src/
 EXEC=./bin/darknet
+SERVER_EXEC=./bin/darknet_server
 OBJDIR=./obj/
 
 CC=gcc
 CPP=g++
 NVCC=nvcc 
-OPTS=-Ofast
+OPTS= -Ofast
 LDFLAGS= -lm -pthread 
 COMMON= 
-CFLAGS=-Wall -Wfatal-errors
+CFLAGS=-Wall -Wfatal-errors -g
 
 ifeq ($(DEBUG), 1) 
 OPTS=-O0 -g
@@ -86,18 +87,27 @@ LDFLAGS+= -L/usr/local/cudnn/lib64 -lcudnn
 endif
 
 OBJ=main.o additionally.o box.o yolov2_forward_network.o yolov2_forward_network_quantized.o
+SERVER_OBJ=server.o server_functions.o additionally.o box.o yolov2_forward_network.o yolov2_forward_network_quantized.o
 ifeq ($(GPU), 1) 
 LDFLAGS+= -lstdc++ 
 OBJ+=gpu.o yolov2_forward_network_gpu.o 
+SERVER_OBJ+=gpu.o yolov2_forward_network_gpu.o 
 endif
 
 OBJS = $(addprefix $(OBJDIR), $(OBJ))
+SERVER_OBJS = $(addprefix $(OBJDIR), $(SERVER_OBJ))
 DEPS = $(wildcard src/*.h) Makefile
 
-all: obj bash results $(EXEC)
+all: obj bash results $(EXEC) $(SERVER_EXEC)
+
+$(SERVER_EXEC): $(SERVER_OBJS)
+	$(CXX) $(COMMON) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 $(EXEC): $(OBJS)
 	$(CC) $(COMMON) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+$(OBJDIR)%.o: %.cpp $(DEPS)
+	$(CXX) $(COMMON) $(CFLAGS) -c $< -o $@
 
 $(OBJDIR)%.o: %.c $(DEPS)
 	$(CC) $(COMMON) $(CFLAGS) -c $< -o $@

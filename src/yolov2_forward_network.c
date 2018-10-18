@@ -29,7 +29,6 @@ size_t binary_transpose_align_input(int k, int n, float *b, char **t_bit_input, 
 // 4 layers in 1: convolution, batch-normalization, BIAS and activation
 void forward_convolutional_layer_cpu(layer l, network_state state)
 {
-
     int out_h = (l.h + 2 * l.pad - l.size) / l.stride + 1;    // output_height=input_height for stride=1 and pad=1
     int out_w = (l.w + 2 * l.pad - l.size) / l.stride + 1;    // output_width=input_width for stride=1 and pad=1
     int i, f, j;
@@ -588,10 +587,10 @@ box get_region_box_cpu(float *x, float *biases, int n, int index, int i, int j, 
 }
 
 // get prediction boxes
-void get_region_boxes_cpu(layer l, int w, int h, float thresh, float **probs, box *boxes, int only_objectness, int *map)
+void get_region_boxes_cpu(layer l, int w, int h, float thresh, float **probs, box *boxes, int only_objectness, int *map, int batch_index)
 {
     int i;
-    float *const predictions = l.output;
+    float *const predictions = l.output+batch_index*l.outputs;
     // grid index
     #pragma omp parallel for
     for (i = 0; i < l.w*l.h; ++i) {

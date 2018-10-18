@@ -2621,15 +2621,18 @@ image load_image_stb(char *filename, int channels)
     if (channels) c = channels;
     int i, j, k;
     image im = make_image(w, h, c);
+    float checksum=0.0;
     for (k = 0; k < c; ++k) {
         for (j = 0; j < h; ++j) {
             for (i = 0; i < w; ++i) {
                 int dst_index = i + w*j + w*h*k;
                 int src_index = k + c*i + c*w*j;
                 im.data[dst_index] = (float)data[src_index] / 255.;
+		checksum+=im.data[dst_index];
             }
         }
     }
+    fprintf(stderr,"STB CHECKSUM %0.2f\n",checksum);
     free(data);
     return im;
 }
@@ -3878,16 +3881,16 @@ int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh,
 }
 
 // get prediction boxes: yolov2_forward_network.c
-void get_region_boxes_cpu(layer l, int w, int h, float thresh, float **probs, box *boxes, int only_objectness, int *map);
+void get_region_boxes_cpu(layer l, int w, int h, float thresh, float **probs, box *boxes, int only_objectness, int *map, int batch_index);
 
 
-void custom_get_region_detections(layer l, int w, int h, int net_w, int net_h, float thresh, int *map, float hier, int relative, detection *dets, int letter)
+void custom_get_region_detections(layer l, int w, int h, int net_w, int net_h, float thresh, int *map, float hier, int relative, detection *dets, int letter, int batch_index)
 {
     box *boxes = calloc(l.w*l.h*l.n, sizeof(box));
     float **probs = calloc(l.w*l.h*l.n, sizeof(float *));
     int i, j;
     for (j = 0; j < l.w*l.h*l.n; ++j) probs[j] = calloc(l.classes, sizeof(float *));
-    get_region_boxes_cpu(l, 1, 1, thresh, probs, boxes, 0, map);
+    get_region_boxes_cpu(l, 1, 1, thresh, probs, boxes, 0, map, batch_index);
     for (j = 0; j < l.w*l.h*l.n; ++j) {
         dets[j].classes = l.classes;
         dets[j].bbox = boxes[j];
@@ -3904,7 +3907,7 @@ void custom_get_region_detections(layer l, int w, int h, int net_w, int net_h, f
     correct_yolo_boxes(dets, l.w*l.h*l.n, w, h, net_w, net_h, relative, letter);
 }
 
-void fill_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, detection *dets, int letter)
+void fill_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, detection *dets, int letter, int batch_index)
 {
     int j;
     for (j = 0; j < net->n; ++j) {
@@ -3914,17 +3917,17 @@ void fill_network_boxes(network *net, int w, int h, float thresh, float hier, in
             dets += count;
         }
         if (l.type == REGION) {
-            custom_get_region_detections(l, w, h, net->w, net->h, thresh, map, hier, relative, dets, letter);
+            custom_get_region_detections(l, w, h, net->w, net->h, thresh, map, hier, relative, dets, letter, batch_index);
             //get_region_detections(l, w, h, net->w, net->h, thresh, map, hier, relative, dets);
             dets += l.w*l.h*l.n;
         }
     }
 }
 
-detection *get_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, int *num, int letter)
+detection *get_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, int *num, int letter, int batch_index)
 {
     detection *dets = make_network_boxes(net, thresh, num);
-    fill_network_boxes(net, w, h, thresh, hier, map, relative, dets, letter);
+    fill_network_boxes(net, w, h, thresh, hier, map, relative, dets, letter, batch_index);
     return dets;
 }
 
@@ -4182,7 +4185,7 @@ void validate_detector_map(char *datacfg, char *cfgfile, char *weightfile, float
             int nboxes = 0;
             int letterbox = (args.type == LETTERBOX_DATA);
             float hier_thresh = 0;
-            detection *dets = get_network_boxes(&net, 1, 1, thresh, hier_thresh, 0, 0, &nboxes, letterbox);
+            detection *dets = get_network_boxes(&net, 1, 1, thresh, hier_thresh, 0, 0, &nboxes, letterbox,0);
             //detection *dets = get_network_boxes(&net, val[t].w, val[t].h, thresh, hier_thresh, 0, 1, &nboxes, letterbox); // for letterbox=1
             if (nms) do_nms_sort_v3(dets, nboxes, l.classes, nms);
 

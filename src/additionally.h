@@ -947,7 +947,10 @@ extern "C" {
     void validate_calibrate_valid(char *datacfg, char *cfgfile, char *weightfile, int input_calibration);
 
     // additionally.c
-    detection *get_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, int *num, int letter);
+    detection *get_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, int *num, int letter, int batch_index);
+
+    // additiontally.c
+    int num_detections(network *net, float thresh);
 
     // additionally.c
     int entry_index(layer l, int batch, int location, int entry);
