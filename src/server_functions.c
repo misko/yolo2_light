@@ -230,7 +230,12 @@ detection ** dn_run_detector(float * data, unsigned int number_of_images)
         layer l = net.layers[net.n - 1];
 
 	//float *X = sized.data;
-	float *X = data+image_size*processing_index;
+	float *X = (float *)calloc(1,sizeof(float)*image_size*batch_size);
+	int images_in_this_batch=batch_size;
+	if (number_of_images-processing_index<batch_size) {
+		images_in_this_batch=number_of_images-processing_index;
+	}
+	memcpy(X,data+image_size*processing_index,images_in_this_batch*image_size*sizeof(float));
         time = clock();
 	//network_predict(net, X);
 	//
@@ -283,7 +288,7 @@ detection ** dn_run_detector(float * data, unsigned int number_of_images)
 	pthread_cond_broadcast(&cond_gpu_busy); 
         printf("%s: Predicted in %f seconds.\n", "X", (float)(clock() - time) / CLOCKS_PER_SEC); //sec(clock() - time));
 
-	for (int b=0; b<batch_size; b++) {
+	for (int b=0; b<images_in_this_batch; b++) {
 		float hier_thresh = 0.5;
 		int ext_output = 1, letterbox = 0, nboxes = 0;
 		detection *dets = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, b );
@@ -305,7 +310,8 @@ detection ** dn_run_detector(float * data, unsigned int number_of_images)
 		//free_detections(dets, nboxes);
 	}
 
-	processing_index+=batch_size;
+	processing_index+=images_in_this_batch;
+	free(X);
     }
     return image_dets;
 }
@@ -377,7 +383,7 @@ void dn_init_detector(int argc, char **argv)
     fclose(fp);
     int classes = obj_count;
 
-    batch_size=2;
+    batch_size=16;
     net = parse_network_cfg(cfg, batch_size, quantized);    // parser.c
     if (weights) {
         load_weights_upto_cpu(&net, weights, net.n);    // parser.c
