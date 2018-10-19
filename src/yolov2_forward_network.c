@@ -625,12 +625,12 @@ void get_region_boxes_cpu(layer l, int w, int h, float thresh, float **probs, bo
                 }
                 else {
                     for (j = l.classes - 1; j >= 0; --j) {
-                        if (!found && predictions[class_index + j] > .5) {
+                        /*if (!found && predictions[class_index + j] > .5) {
                             found = 1;
                         }
                         else {
                             predictions[class_index + j] = 0;
-                        }
+                        }*/
                         float prob = predictions[class_index + j];
                         probs[index][j] = (scale > thresh) ? prob : 0;
                     }
