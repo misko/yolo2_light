@@ -38,7 +38,7 @@ ARCH= -gencode arch=compute_30,code=sm_30 \
 VPATH=./src/
 EXEC=./bin/darknet
 SERVER_EXEC=./bin/darknet_server
-SHARED_LIB=./bin/darknet.so
+SHARED_LIB=./darknet.so
 OBJDIR=./obj/
 
 CC=gcc

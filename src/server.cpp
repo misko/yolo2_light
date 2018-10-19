@@ -2,10 +2,7 @@
 #include <stdlib.h>
 
 #include "box.h"
-#include "pthread.h"
-
 #include "additionally.h"
-
 #include "server_functions.h"
 
 #include <string>
@@ -26,7 +23,7 @@ int main(int argc, char **argv)
     }
 
     //load up the detector
-    init_detector(argc, argv);
+    dn_init_detector(argc, argv);
 
     //read in the input list
     char *input_list = find_char_arg(argc, argv, "-list", "wtf");
@@ -45,14 +42,14 @@ int main(int argc, char **argv)
     }
 
     //load file images and put them into a big matrix
-    image * images = load_images(filenames,number_of_filenames);
-    image * resized_images = resize_images(images,number_of_filenames);
-    float * data = images_to_data(resized_images,number_of_filenames);
+    image * images = dn_load_images(filenames,number_of_filenames);
+    image * resized_images = dn_resize_images(images,number_of_filenames);
+    float * data = dn_images_to_data(resized_images,number_of_filenames);
 
-    int nboxes=get_nboxes();
-    char ** names = get_names(); 
+    int nboxes=dn_get_nboxes();
+    char ** names = dn_get_names(); 
     for (int x=0; x<3; x++) {
-    	detection ** image_dets = run_detector(data,number_of_filenames);
+    	detection ** image_dets = dn_run_detector(data,number_of_filenames);
 	for (int i=0; i<number_of_filenames; i++) {
 		fprintf(stderr,"output for image %d\n",i);
 		detection * dets = image_dets[i];

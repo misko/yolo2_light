@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <time.h> 
+#include <time.h> 
+#include <pthread.h> 
 #include "box.h"
-#include "pthread.h"
-
+//#include "pthread.h"
+#include <errno.h>
 #include "additionally.h"
 
 static int batch_size;
@@ -13,7 +15,11 @@ static int obj_count;
 static float thresh;
 static int quantized;
 
-int get_nboxes() {
+int gpu_busy=0;
+pthread_cond_t cond_gpu_busy;
+pthread_mutex_t network_mutex; 
+
+int dn_get_nboxes() {
 	return num_detections(&net,thresh);
 }
 
@@ -70,7 +76,7 @@ int compare_by_probs(const void *a_ptr, const void *b_ptr) {
     return delta < 0 ? -1 : delta > 0 ? 1 : 0;
 }
 
-char ** get_names() {
+char ** dn_get_names() {
 	return names;
 }
 
@@ -82,6 +88,7 @@ void draw_detections_v3(image im, detection *dets, int num, float thresh, char *
     // text output
     qsort(selected_detections, selected_detections_num, sizeof(*selected_detections), compare_by_lefts);
     int i;
+    /*
     for (i = 0; i < selected_detections_num; ++i) {
         const int best_class = selected_detections[i].best_class;
         printf("%s: %.0f%%", names[best_class], selected_detections[i].det.prob[best_class] * 100);
@@ -98,7 +105,7 @@ void draw_detections_v3(image im, detection *dets, int num, float thresh, char *
                 printf("%s: %.0f%%\n", names[j], selected_detections[i].det.prob[j] * 100);
             }
         }
-    }
+    }*/
 
     // image output
     qsort(selected_detections, selected_detections_num, sizeof(*selected_detections), compare_by_probs);
@@ -138,7 +145,7 @@ void draw_detections_v3(image im, detection *dets, int num, float thresh, char *
 }
 
 
-image * load_images(const char ** filenames, unsigned int number_of_filenames) {
+image * dn_load_images(const char ** filenames, unsigned int number_of_filenames) {
 	if (number_of_filenames<=0) {
 		return NULL;
 	}
@@ -153,7 +160,7 @@ image * load_images(const char ** filenames, unsigned int number_of_filenames) {
 	return images;
 }
 
-image * resize_images(image * images, unsigned int number_of_images) {
+image * dn_resize_images(image * images, unsigned int number_of_images) {
 	if (number_of_images<=0) {
 		return NULL;
 	}
@@ -168,7 +175,7 @@ image * resize_images(image * images, unsigned int number_of_images) {
 	return resized_images;
 }
 
-float * images_to_data(image * images, unsigned int number_of_images) {
+float * dn_images_to_data(image * images, unsigned int number_of_images) {
 	if (number_of_images<=0) {
 		return NULL;
 	}
@@ -180,7 +187,7 @@ float * images_to_data(image * images, unsigned int number_of_images) {
 	return data;
 }
 
-void free_images(image * images, unsigned int number_of_images) {
+void dn_free_images(image * images, unsigned int number_of_images) {
 	for (int n=0; n<number_of_images; n++) {
 		free_image(images[n]);                    // image.c
 	}
@@ -188,9 +195,24 @@ void free_images(image * images, unsigned int number_of_images) {
 
 // --------------- Detect on the Image ---------------
 
+void dn_draw_detections(image im,detection * dets) {
+	draw_detections_v3(im, dets, dn_get_nboxes(), thresh, names, 6, 1);
+}
+
+void dn_save_image(image im, char * filename) {
+	save_image_png(im, filename);    // image.c
+}
+
+void dn_free_detections(detection ** image_dets, unsigned int number_of_images) {
+	int nboxes = dn_get_nboxes();
+	for (int n=0; n<number_of_images; n++) {
+		free_detections(image_dets[n],nboxes);
+	}
+}
 // Detect on Image: this function uses other functions not from this file
-detection ** run_detector(float * data, unsigned int number_of_images) 
+detection ** dn_run_detector(float * data, unsigned int number_of_images) 
 {
+
     clock_t time;
     float nms = .4;
 
@@ -210,7 +232,32 @@ detection ** run_detector(float * data, unsigned int number_of_images)
 	//float *X = sized.data;
 	float *X = data+image_size*processing_index;
         time = clock();
-        //network_predict(net, X);
+	//network_predict(net, X);
+	//
+	//
+	//lets try to grab that network gpu
+	pthread_mutex_lock(&network_mutex);
+
+	struct timespec max_wait = {0, 0};
+	clock_gettime(CLOCK_REALTIME, &max_wait);
+        max_wait.tv_sec +=5;;
+	while (gpu_busy==1) {
+		int err = pthread_cond_timedwait(&cond_gpu_busy, &network_mutex, &max_wait);
+		if (err == ETIMEDOUT) {
+			/* timeout, do something */
+			fprintf(stderr,"TIMEOUT!!\n");
+			free(image_dets);
+			int nboxes=dn_get_nboxes();
+			for (int i=0; i<processing_index; i++) {
+				free_detections(image_dets[i], nboxes);
+			}
+			return NULL;
+		}
+	}
+	gpu_busy=1;
+	pthread_mutex_unlock(&network_mutex);
+
+	//run the network
 #ifdef GPU
         if (quantized) {
             network_predict_gpu_cudnn_quantized(net, X);    // quantized works only with Yolo v2
@@ -232,6 +279,8 @@ detection ** run_detector(float * data, unsigned int number_of_images)
         }
 #endif
 #endif
+	gpu_busy=0;
+	pthread_cond_broadcast(&cond_gpu_busy); 
         printf("%s: Predicted in %f seconds.\n", "X", (float)(clock() - time) / CLOCKS_PER_SEC); //sec(clock() - time));
 
 	for (int b=0; b<batch_size; b++) {
@@ -241,9 +290,14 @@ detection ** run_detector(float * data, unsigned int number_of_images)
 		if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
 		//draw_detections_v3(resized_images[i], dets, nboxes, thresh, names, l.classes, ext_output);
 
-		//char buffer[256];
-		//sprintf(buffer,"predictions_%d",i);
-		//save_image_png(resized_images[i], buffer);    // image.c
+		/*char buffer[256];
+		sprintf(buffer,"predictions_%d",processing_index+b);
+		image resized_image ; 
+		resized_image.w=net.w;
+		resized_image.h=net.h;
+		resized_image.c=3;
+		resized_image.data=data+image_size*(processing_index+b);
+		save_image_png(resized_image, buffer);    // image.c*/
 
 		image_dets[processing_index+b]=dets;
 
@@ -261,8 +315,21 @@ detection ** run_detector(float * data, unsigned int number_of_images)
 // --------------- Detect on the Video ---------------
 
 // get command line parameters and load objects names
-void init_detector(int argc, char **argv)
+void dn_init_detector(int argc, char **argv)
 {
+	if (pthread_mutex_init(&network_mutex, NULL) != 0) 
+	{ 
+		printf("\n mutex init has failed\n"); 
+		exit(1); 
+	} 
+	if ( pthread_cond_init(&cond_gpu_busy, NULL)!=0)
+	{
+		printf("\n cond init has failed\n"); 
+		exit(1); 
+
+	}
+
+
     int gpu_index = find_int_arg(argc, argv, "-i", 0);  //  gpu_index = 0;
 #ifndef GPU
     gpu_index = -1;
@@ -327,7 +394,7 @@ void init_detector(int argc, char **argv)
 }
 
 
-void close_detector() {
+void dn_close_detector() {
    //TODO 
 
     int i;
