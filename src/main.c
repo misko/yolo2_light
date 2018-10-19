@@ -151,7 +151,6 @@ void draw_detections_v3(image im, detection *dets, int num, float thresh, char *
 
 // --------------- Detect on the Image ---------------
 
-
 // Detect on Image: this function uses other functions not from this file
 void test_detector_cpu(char **names, char *cfgfile, char *weightfile, char *filename, float thresh, int quantized, int dont_show)
 {
@@ -225,7 +224,7 @@ void test_detector_cpu(char **names, char *cfgfile, char *weightfile, char *file
         //draw_detections_cpu(im, l.w*l.h*l.n, thresh, boxes, probs, names, alphabet, l.classes);    // draw_detections(): image.c
         float hier_thresh = 0.5;
         int ext_output = 1, letterbox = 0, nboxes = 0;
-        detection *dets = get_network_boxes(&net, im.w, im.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox);
+        detection *dets = get_network_boxes(&net, im.w, im.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, 0);
         if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
         draw_detections_v3(im, dets, nboxes, thresh, names, alphabet, l.classes, ext_output);
 
@@ -420,9 +419,9 @@ static void *detect_in_thread(void *ptr)
     int ext_output = 1, letterbox = 0, nboxes = 0;
     detection *dets = NULL;
     if (letterbox)
-        dets = get_network_boxes(&net, in_img->width, in_img->height, demo_thresh, demo_thresh, 0, 1, &nboxes, 1); // letter box
+        dets = get_network_boxes(&net, in_img->width, in_img->height, demo_thresh, demo_thresh, 0, 1, &nboxes, 1, 0); // letter box
     else
-        dets = get_network_boxes(&net, det_s.w, det_s.h, demo_thresh, demo_thresh, 0, 1, &nboxes, 0); // resized
+        dets = get_network_boxes(&net, det_s.w, det_s.h, demo_thresh, demo_thresh, 0, 1, &nboxes, 0, 0); // resized
                                                                                                       //if (nms) do_nms_obj(dets, nboxes, l.classes, nms);    // bad results
     if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
     draw_detections_cv_v3(det_img, dets, nboxes, demo_thresh, demo_names, NULL, demo_classes, ext_output);

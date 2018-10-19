@@ -38,6 +38,7 @@ ARCH= -gencode arch=compute_30,code=sm_30 \
 VPATH=./src/
 EXEC=./bin/darknet
 SERVER_EXEC=./bin/darknet_server
+SHARED_LIB=./bin/darknet.so
 OBJDIR=./obj/
 
 CC=gcc
@@ -87,7 +88,7 @@ LDFLAGS+= -L/usr/local/cudnn/lib64 -lcudnn
 endif
 
 OBJ=main.o additionally.o box.o yolov2_forward_network.o yolov2_forward_network_quantized.o
-SERVER_OBJ=server.o server_functions.o additionally.o box.o yolov2_forward_network.o yolov2_forward_network_quantized.o
+SERVER_OBJ=server_functions.o additionally.o box.o yolov2_forward_network.o yolov2_forward_network_quantized.o
 ifeq ($(GPU), 1) 
 LDFLAGS+= -lstdc++ 
 OBJ+=gpu.o yolov2_forward_network_gpu.o 
@@ -98,9 +99,12 @@ OBJS = $(addprefix $(OBJDIR), $(OBJ))
 SERVER_OBJS = $(addprefix $(OBJDIR), $(SERVER_OBJ))
 DEPS = $(wildcard src/*.h) Makefile
 
-all: obj bash results $(EXEC) $(SERVER_EXEC)
+all: obj bash results $(EXEC) $(SHARED_LIB) $(SERVER_EXEC) 
 
-$(SERVER_EXEC): $(SERVER_OBJS)
+$(SHARED_LIB): $(SERVER_OBJS)
+	$(CXX) $(COMMON) $(CFLAGS) -shared $^ -o $@ $(LDFLAGS)
+
+$(SERVER_EXEC): server.o $(SHARED_LIB)
 	$(CXX) $(COMMON) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 $(EXEC): $(OBJS)
@@ -125,5 +129,5 @@ results:
 .PHONY: clean
 
 clean:
-	rm -rf $(OBJS) $(EXEC)
+	rm -rf $(OBJS) $(EXEC) $(SERVER_OBJS) $(SERVER_EXEC) $(SHARED_LIB)
 
