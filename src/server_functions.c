@@ -4,6 +4,7 @@
 #include <time.h> 
 #include <pthread.h> 
 #include "box.h"
+#include "server_functions.h"
 //#include "pthread.h"
 #include <errno.h>
 #include "additionally.h"
@@ -15,9 +16,122 @@ static int obj_count;
 static float thresh;
 static int quantized;
 
-int gpu_busy=0;
-pthread_cond_t cond_gpu_busy;
-pthread_mutex_t network_mutex; 
+pthread_mutex_t gpu_mutex; 
+
+#define MAX_TASKS 16
+#define QUEUE_SIZE 32
+#define GPU_THREADS 2
+
+pthread_t gpu_threads[GPU_THREADS];
+dn_gpu_task ** work_queue[QUEUE_SIZE];
+int work_queue_first_used=0;
+int work_queue_used=0;
+pthread_mutex_t work_queue_lock; 
+pthread_cond_t cond_data_waiting;
+
+
+
+int dn_enqueue(dn_gpu_task* t) {
+	if (t->number_of_images<=0) {
+		return -1;
+	}
+	int ret = pthread_mutex_lock(&work_queue_lock);
+	if (ret!=0) {
+		fprintf(stderr,"CRITICAL MUTEX ERROR\n");
+		exit(1);
+	}
+
+	//CRITICAL REGION
+	
+	if (work_queue_used==QUEUE_SIZE) {
+		fprintf(stderr,"WORK QUEUE IS FULL!\n");
+		pthread_mutex_unlock(&work_queue_lock);
+		return -1;
+	}
+
+	work_queue[(work_queue_first_used+work_queue_used)%QUEUE_SIZE]=t;
+
+	work_queue_used=work_queue_used+1;
+	fprintf(stderr,"QUEUE HAS %d\n",work_queue_used);	
+	//END CRITICAL REGION
+	pthread_cond_broadcast(&cond_data_waiting);
+	
+	pthread_mutex_unlock(&work_queue_lock);
+	return 0;
+}
+
+dn_gpu_task * dn_dequeue(int * number_of_tasks) {
+	int ret = pthread_mutex_lock(&work_queue_lock);
+	if (ret!=0) {
+		fprintf(stderr,"CRITICAL MUTEX ERROR\n");
+		exit(1);
+	}
+
+	//wait for some data
+	while (work_queue_used<=0) {
+		fprintf(stderr,"SPOOLING FOR GPU\n");
+		pthread_cond_wait(&cond_data_waiting, &work_queue_lock);
+	}
+	fprintf(stderr,"WORK QUEUE USED %d\n",work_queue_used);
+
+	//CRITICAL REGION
+	int tasks_to_take=0;
+	int used_in_this_batch=0;
+	while (tasks_to_take<MAX_TASKS && (work_queue_used-tasks_to_take)>0) {
+		dn_gpu_task * next_task = work_queue[(work_queue_first_used+tasks_to_take)%QUEUE_SIZE];
+		//add this one to the batch
+		used_in_this_batch+=next_task->number_of_images;
+		tasks_to_take++;
+	}
+
+	dn_gpu_task ** my_tasks = (dn_gpu_task**)malloc(sizeof(dn_gpu_task)*tasks_to_take);
+	for (int i=0; i<tasks_to_take; i++) {
+		my_tasks[i]=work_queue[(work_queue_first_used+i)%QUEUE_SIZE];
+	}
+	*number_of_tasks=tasks_to_take;
+	work_queue_first_used=(work_queue_first_used+tasks_to_take)%QUEUE_SIZE;
+	work_queue_used-=tasks_to_take;
+	
+	//END CRITICAL REGION
+	
+	pthread_mutex_unlock(&work_queue_lock);
+
+	return my_tasks;
+}
+
+
+dn_gpu_task * dn_create_task(int number_of_images) {
+	dn_gpu_task * t = (dn_gpu_task*)calloc(1,sizeof(dn_gpu_task));
+	if (t==NULL) {
+		fprintf(stderr,"out of memory\n");
+		exit(1);
+	}
+	t->image_dets=(detection**)calloc(1,sizeof(detection*)*number_of_images);
+	if (t->image_dets==NULL) {
+		fprintf(stderr,"out of memory\n");
+		exit(1);
+	}
+	t->number_of_images=number_of_images;
+	//t->X=NULL; //done by calloc
+	if (pthread_mutex_init(&(t->cv_mutex), NULL) != 0)  { 
+		printf("\n mutex init has failed\n"); 
+		exit(1); 
+	} 
+	if ( pthread_cond_init(&(t->cv), NULL)!=0) {
+		printf("\n cond init has failed\n"); 
+		exit(1); 
+	}
+	t->status=TASK_NOT_READY;
+	return t;
+}
+
+void dn_destroy_task(dn_gpu_task*t) {
+	pthread_mutex_destroy(&(t->cv_mutex));
+	pthread_cond_destroy(&(t->cv));
+	free(t->image_dets);
+	free(t);
+}
+
 
 int dn_get_nboxes() {
 	return num_detections(&net,thresh);
@@ -210,8 +324,7 @@ void dn_free_detections(detection ** image_dets, unsigned int number_of_images) 
 	}
 }
 // Detect on Image: this function uses other functions not from this file
-detection ** dn_run_detector(float * data, unsigned int number_of_images) 
-{
+void * dn_detector_worker(void * x)  {
 
     clock_t time;
     float nms = .4;
@@ -219,6 +332,149 @@ detection ** dn_run_detector(float * data, unsigned int number_of_images)
     //set_batch_network(&net, batch_size);                    // network.c
     size_t image_size = net.w*net.h*3;
 
+    //get input buffer ready
+    float *X = (float *)malloc(sizeof(float)*image_size*batch_size);
+    if (X==NULL) {
+	fprintf(stderr,"Failed to malloc memory for image batch input buffer\n");
+	exit(1);
+    }
+
+    detection *** image_dets = (detection***)malloc(sizeof(detection**)*batch_size);
+    if (image_dets==NULL) {
+	fprintf(stderr,"Failed to malloc memory for image batch input buffer\n");
+	exit(1);
+    }
+
+    fprintf(stderr,"SERVER THREAD READY image_dets %p\n",image_dets);
+    while (1) {
+	//lets get a batch
+	int number_of_tasks=0;
+    	fprintf(stderr,"SERVER THREAD DEQUEUE WAIT\n");
+	dn_gpu_task ** my_tasks = dn_dequeue(&number_of_tasks);	
+	if (number_of_tasks==0) {
+		fprintf(stderr,"that was weird\n");
+		continue;
+	}
+    	fprintf(stderr,"SERVER THREAD DEQUEUED\n");
+
+	//find out how many images we have
+	int images_to_process=0;
+	for (int task_idx=0; task_idx<number_of_tasks; task_idx++) {
+		const dn_gpu_task * t = my_tasks[task_idx];
+		images_to_process+=t->number_of_images;
+	}
+
+	int last_task=0;
+	int last_image=0;
+	int images_processed=0;
+
+    	fprintf(stderr,"SERVER THREAD PROCESSING\n");
+	while (images_processed<images_to_process) {
+		//zero the input buffer
+		memset(X,0,sizeof(float)*image_size*batch_size);
+		memset(image_dets,0,sizeof(detection*)*batch_size);
+		
+		//find out how many images in this specific batch
+		int images_in_this_batch=(images_to_process-images_processed);
+		if (images_in_this_batch>batch_size) {
+			images_in_this_batch=batch_size;
+		}
+    		fprintf(stderr,"SERVER THREAD PROCESSING - images_in_this_batch %d\n",images_in_this_batch);
+
+		//now copy the input data to our buffer
+		for (int i=0; i<images_in_this_batch;) {
+			dn_gpu_task * t = my_tasks[last_task]; //get the task at hand
+			fprintf(stderr,"CHECKING TASK %d %p , image_dets %p\n",i,t,t->image_dets);
+			int images_to_load=0;
+			if ((t->number_of_images-last_image)<=(images_in_this_batch-i)) {
+				//load the rest of the task
+				images_to_load = (t->number_of_images-last_image);
+			} else {
+				//load only part of it
+				images_to_load = images_in_this_batch - i;
+			}	
+			fprintf(stderr,"IMAGES TO LOAD %d\n",images_to_load);
+			//copy the inputs and the output pointers
+			memcpy(X+i*image_size,t->X+last_image*image_size,images_to_load*image_size*sizeof(float));
+			for (int j=0; j<images_to_load; j++) {
+				fprintf(stderr,"image_dets[%d]=%p\n",i+j,t->image_dets+last_image+i+j);
+				image_dets[i+j]=t->image_dets+last_image+i+j;
+			}
+
+			last_image+=images_to_load;
+			if (last_image==t->number_of_images) {
+				last_task++;
+				last_image=0;
+			}
+			i+=images_to_load;
+		}
+
+		//lets try to grab that network gpu
+		pthread_mutex_lock(&gpu_mutex);
+		fprintf(stderr,"GOT TO THE GPU!\n");
+		//run the network
+#ifdef GPU
+		if (quantized) {
+			network_predict_gpu_cudnn_quantized(net, X);    // quantized works only with Yolo v2
+			//nms = 0.2;
+		}
+		else {
+			network_predict_gpu_cudnn(net, X);
+		}
+#else
+#ifdef OPENCL
+		network_predict_opencl(net, X);
+#else
+		if (quantized) {
+			network_predict_quantized(net, X);    // quantized works only with Yolo v2
+			nms = 0.2;
+		}
+		else {
+			network_predict_cpu(net, X);
+		}
+#endif
+#endif
+
+        	layer l = net.layers[net.n - 1];
+		fprintf(stderr,"GOT TO THE GPU! - DONE\n");
+
+
+		for (int b=0; b<images_in_this_batch; b++) {
+			float hier_thresh = 0.5;
+			int ext_output = 1, letterbox = 0, nboxes = 0;
+			detection *dets = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, b );
+			if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
+			//draw_detections_v3(resized_images[i], dets, nboxes, thresh, names, l.classes, ext_output);
+			fprintf(stderr,"image_dets %p, b %d, image_dets[b] %p\n",image_dets, b,image_dets[b]);
+			*image_dets[b]=dets;
+
+			//free_image(resized_images[i]);                    // image.c
+			//free_detections(dets, nboxes);
+		}
+		pthread_mutex_unlock(&gpu_mutex);
+
+		//processing_index+=images_in_this_batch;
+		//free(X);
+		
+		images_processed+=images_in_this_batch;
+	}
+	for (int task_idx=0; task_idx<number_of_tasks; task_idx++) {
+		dn_gpu_task * t = my_tasks[task_idx];
+		t->status=TASK_DONE;
+
+		int ret = pthread_mutex_lock(&t->cv_mutex);
+		if (ret!=0) {
+			fprintf(stderr,"CRITICAL MUTEX ERROR\n");
+			exit(1);
+		}
+		pthread_cond_broadcast(&(t->cv));
+		pthread_mutex_unlock(&t->cv_mutex);
+
+	}
+
+    }
+
+/*
     detection ** image_dets = (detection**)malloc(sizeof(detection*)*number_of_images);
     if (image_dets==NULL) {
 	fprintf(stderr,"FAILED TO MALLOC IMAGE DETS\n");
@@ -249,7 +505,6 @@ detection ** dn_run_detector(float * data, unsigned int number_of_images)
 	while (gpu_busy==1) {
 		int err = pthread_cond_timedwait(&cond_gpu_busy, &network_mutex, &max_wait);
 		if (err == ETIMEDOUT) {
-			/* timeout, do something */
 			fprintf(stderr,"TIMEOUT!!\n");
 			free(image_dets);
 			int nboxes=dn_get_nboxes();
@@ -295,6 +550,81 @@ detection ** dn_run_detector(float * data, unsigned int number_of_images)
 		if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
 		//draw_detections_v3(resized_images[i], dets, nboxes, thresh, names, l.classes, ext_output);
 
+
+		image_dets[processing_index+b]=dets;
+
+		//free_image(resized_images[i]);                    // image.c
+		//free_detections(dets, nboxes);
+	}
+
+	processing_index+=images_in_this_batch;
+	free(X);
+    }
+    return image_dets;*/
+}
+// Detect on Image: this function uses other functions not from this file
+detection ** dn_run_detector(float * data, unsigned int number_of_images) 
+{
+
+    clock_t time;
+    float nms = .4;
+
+    //set_batch_network(&net, batch_size);                    // network.c
+    size_t image_size = net.w*net.h*3;
+
+
+    detection ** image_dets = (detection**)malloc(sizeof(detection*)*number_of_images);
+    if (image_dets==NULL) {
+	fprintf(stderr,"FAILED TO MALLOC IMAGE DETS\n");
+	return NULL;
+    }
+    fprintf(stderr,"RUNNING IN BATCH MODE\n");
+    int processing_index=0;
+    while (processing_index<number_of_images) {
+        layer l = net.layers[net.n - 1];
+
+	//float *X = sized.data;
+	float *X = (float *)calloc(1,sizeof(float)*image_size*batch_size);
+	int images_in_this_batch=batch_size;
+	if (number_of_images-processing_index<batch_size) {
+		images_in_this_batch=number_of_images-processing_index;
+	}
+	memcpy(X,data+image_size*processing_index,images_in_this_batch*image_size*sizeof(float));
+
+	//lets try to grab that network gpu
+	pthread_mutex_lock(&gpu_mutex);
+
+	//run the network
+#ifdef GPU
+        if (quantized) {
+            network_predict_gpu_cudnn_quantized(net, X);    // quantized works only with Yolo v2
+                                                            //nms = 0.2;
+        }
+        else {
+            network_predict_gpu_cudnn(net, X);
+        }
+#else
+#ifdef OPENCL
+        network_predict_opencl(net, X);
+#else
+        if (quantized) {
+            network_predict_quantized(net, X);    // quantized works only with Yolo v2
+            nms = 0.2;
+        }
+        else {
+            network_predict_cpu(net, X);
+        }
+#endif
+#endif
+        printf("%s: Predicted in %f seconds.\n", "X", (float)(clock() - time) / CLOCKS_PER_SEC); //sec(clock() - time));
+
+	for (int b=0; b<images_in_this_batch; b++) {
+		float hier_thresh = 0.5;
+		int ext_output = 1, letterbox = 0, nboxes = 0;
+		detection *dets = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, b );
+		if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
+		//draw_detections_v3(resized_images[i], dets, nboxes, thresh, names, l.classes, ext_output);
+
 		/*char buffer[256];
 		sprintf(buffer,"predictions_%d",processing_index+b);
 		image resized_image ; 
@@ -309,6 +639,7 @@ detection ** dn_run_detector(float * data, unsigned int number_of_images)
 		//free_image(resized_images[i]);                    // image.c
 		//free_detections(dets, nboxes);
 	}
+	pthread_mutex_unlock(&gpu_mutex);
 
 	processing_index+=images_in_this_batch;
 	free(X);
@@ -323,12 +654,17 @@ detection ** dn_run_detector(float * data, unsigned int number_of_images)
 // get command line parameters and load objects names
 void dn_init_detector(int argc, char **argv)
 {
-	if (pthread_mutex_init(&network_mutex, NULL) != 0) 
+	if (pthread_mutex_init(&work_queue_lock, NULL) != 0) 
 	{ 
 		printf("\n mutex init has failed\n"); 
 		exit(1); 
 	} 
-	if ( pthread_cond_init(&cond_gpu_busy, NULL)!=0)
+	if (pthread_mutex_init(&gpu_mutex, NULL) != 0) 
+	{ 
+		printf("\n mutex init has failed\n"); 
+		exit(1); 
+	} 
+	if ( pthread_cond_init(&cond_data_waiting, NULL)!=0)
 	{
 		printf("\n cond init has failed\n"); 
 		exit(1); 
@@ -383,7 +719,7 @@ void dn_init_detector(int argc, char **argv)
     fclose(fp);
     int classes = obj_count;
 
-    batch_size=16;
+    batch_size=2;
     net = parse_network_cfg(cfg, batch_size, quantized);    // parser.c
     if (weights) {
         load_weights_upto_cpu(&net, weights, net.n);    // parser.c
@@ -397,6 +733,16 @@ void dn_init_detector(int argc, char **argv)
     }
     
     //test_detector_cpu_batch(names, cfg, weights, filename, thresh, quantized, dont_show);
+    //
+    //launch GPU workers
+    for (int i=0; i<GPU_THREADS; i++) {
+	    if(pthread_create(gpu_threads+i, NULL, dn_detector_worker, NULL)) {
+
+		    fprintf(stderr, "Error creating thread\n");
+		    exit(1);
+
+	    }
+    }
 }
 
 
