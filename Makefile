@@ -47,7 +47,7 @@ NVCC=nvcc
 OPTS= -Ofast
 LDFLAGS= -lm -pthread 
 COMMON= 
-CFLAGS=-Wall -Wfatal-errors -g
+CFLAGS=-fPIC -Wall -Wfatal-errors -g
 
 ifeq ($(DEBUG), 1) 
 OPTS=-O0 -g
