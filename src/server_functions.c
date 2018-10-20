@@ -398,7 +398,7 @@ void * dn_detector_worker(void * x)  {
 			memcpy(X+i*image_size,t->X+last_image*image_size,images_to_load*image_size*sizeof(float));
 			for (int j=0; j<images_to_load; j++) {
 				fprintf(stderr,"image_dets[%d]=%p\n",i+j,t->image_dets+last_image+i+j);
-				image_dets[i+j]=t->image_dets+last_image+i+j;
+				image_dets[i+j]=t->image_dets+last_image+j;
 			}
 
 			last_image+=images_to_load;
