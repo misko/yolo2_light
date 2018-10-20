@@ -447,16 +447,16 @@ void * dn_detector_worker(void * x)  {
 
         	layer l = net.layers[net.n - 1];
 		//fprintf(stderr,"GOT TO THE GPU! - DONE\n");
-
+		int nboxes=0;
+		const float hier_thresh = 0.5;
+		const int ext_output = 1, letterbox = 0;
 		for (int b=0; b<images_in_this_batch; b++) {
-			float hier_thresh = 0.5;
-			int ext_output = 1, letterbox = 0, nboxes = 0;
-			*image_degs[b] = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, b );
+			*image_dets[b] = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, b );
 		}
 		pthread_mutex_unlock(&gpu_mutex);
 
 		for (int b=0; b<images_in_this_batch; b++) {
-			if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
+			if (nms) do_nms_sort(*image_dets[b], nboxes, l.classes, nms);
 		}
 		
 		images_processed+=images_in_this_batch;
