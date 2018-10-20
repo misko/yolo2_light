@@ -8,6 +8,7 @@
 //#include "pthread.h"
 #include <errno.h>
 #include "additionally.h"
+#include <unistd.h>
 
 static int batch_size;
 static network net;
@@ -21,6 +22,7 @@ pthread_mutex_t gpu_mutex;
 #define MAX_TASKS 16
 #define QUEUE_SIZE 32
 #define GPU_THREADS 2
+#define GPU_WAIT_MS 100000 //0.1s
 
 pthread_t gpu_threads[GPU_THREADS];
 dn_gpu_task ** work_queue[QUEUE_SIZE];
@@ -74,17 +76,9 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 		pthread_cond_wait(&cond_data_waiting, &work_queue_lock);
 		if (work_queue_used>0) {
 			//first data lets wait a tiny bit longer to see if we can grab more data in this batch
-			struct timespec timeToWait;
-			struct timeval now;
-			gettimeofday(&now,NULL);
-
-			timeToWait.tv_sec = now.tv_sec;
-			timeToWait.tv_nsec = now.tv_usec*1000UL+100000000;
-			if (timeToWait.tv_nsec>=1000000000) {
-				timeToWait.tv_nsec-=1000000000;
-				timeToWait.tv_sec++;	
-			}
-			pthread_cond_timedwait(&cond_data_waiting, &work_queue_lock, &timeToWait);
+			pthread_mutex_unlock(&work_queue_lock);
+			usleep(GPU_WAIT_MS);
+			pthread_mutex_lock(&work_queue_lock);
 		}
 	}
 	fprintf(stderr,"WORK QUEUE USED TASK %d\n",work_queue_used);
