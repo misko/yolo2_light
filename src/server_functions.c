@@ -20,12 +20,13 @@ static int quantized;
 pthread_mutex_t gpu_mutex; 
 
 #define MAX_TASKS 16
-#define QUEUE_SIZE 32
-#define GPU_THREADS 2
+#define QUEUE_SIZE 512
+#define GPU_THREADS 4
 #define GPU_WAIT_MS 100000 //0.1s
 #define BATCH_SIZE 16
 
 pthread_t gpu_threads[GPU_THREADS];
+pthread_t gate_keeper_thread;;
 dn_gpu_task ** work_queue[QUEUE_SIZE];
 int work_queue_first_used=0;
 int work_queue_used=0;
@@ -57,10 +58,24 @@ int dn_enqueue(dn_gpu_task* t) {
 	work_queue_used=work_queue_used+1;
 	//fprintf(stderr,"QUEUE HAS %d\n",work_queue_used);	
 	//END CRITICAL REGION
-	pthread_cond_broadcast(&cond_data_waiting);
+	//pthread_cond_broadcast(&cond_data_waiting);
 	
 	pthread_mutex_unlock(&work_queue_lock);
 	return 0;
+}
+
+void * dn_gate_keeper(void * x) {
+	int waits=0;
+	while (1) {
+		usleep(GPU_WAIT_MS/2);
+		if (work_queue_used>0) {
+			waits++;
+		}
+		if (waits>=4) {
+			pthread_cond_signal(&cond_data_waiting);
+			waits=-1;
+		}
+	}
 }
 
 dn_gpu_task * dn_dequeue(int * number_of_tasks) {
@@ -733,10 +748,10 @@ void dn_init_detector(int argc, char **argv)
     yolov2_fuse_conv_batchnorm(net);
     calculate_binary_weights(net);
     if (quantized) {
-        printf("\n\n Quantinization! \n\n");
-        quantinization_and_get_multipliers(net);
+	    printf("\n\n Quantinization! \n\n");
+	    quantinization_and_get_multipliers(net);
     }
-    
+
     //test_detector_cpu_batch(names, cfg, weights, filename, thresh, quantized, dont_show);
     //
     //launch GPU workers
@@ -747,6 +762,11 @@ void dn_init_detector(int argc, char **argv)
 		    exit(1);
 
 	    }
+    }
+    if(pthread_create(&gate_keeper_thread, NULL, dn_gate_keeper, NULL)){
+		    fprintf(stderr, "Error creating thread\n");
+		    exit(1);
+
     }
 }
 
