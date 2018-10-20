@@ -19,8 +19,8 @@ static int quantized;
 pthread_mutex_t gpu_mutex; 
 
 #define MAX_TASKS 16
-#define QUEUE_SIZE 512
-#define GPU_THREADS 4
+#define QUEUE_SIZE 32
+#define GPU_THREADS 2
 
 pthread_t gpu_threads[GPU_THREADS];
 dn_gpu_task ** work_queue[QUEUE_SIZE];
@@ -67,10 +67,25 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 		exit(1);
 	}
 
+
 	//wait for some data
 	while (work_queue_used<=0) {
 		//fprintf(stderr,"SPOOLING FOR GPU\n");
 		pthread_cond_wait(&cond_data_waiting, &work_queue_lock);
+		if (work_queue_used>0) {
+			//first data lets wait a tiny bit longer to see if we can grab more data in this batch
+			struct timespec timeToWait;
+			struct timeval now;
+			gettimeofday(&now,NULL);
+
+			timeToWait.tv_sec = now.tv_sec;
+			timeToWait.tv_nsec = now.tv_usec*1000UL+100000000;
+			if (timeToWait.tv_nsec>=1000000000) {
+				timeToWait.tv_nsec-=1000000000;
+				timeToWait.tv_sec++;	
+			}
+			pthread_cond_timedwait(&cond_data_waiting, &work_queue_lock, &timeToWait);
+		}
 	}
 	fprintf(stderr,"WORK QUEUE USED TASK %d\n",work_queue_used);
 
@@ -458,7 +473,6 @@ void * dn_detector_worker(void * x)  {
 		//free(X);
 		
 		images_processed+=images_in_this_batch;
-    		fprintf(stderr,"SERVER THREAD PROCESSING - images_in_this_batch -DONE %d\n",images_in_this_batch);
 	}
 	for (int task_idx=0; task_idx<number_of_tasks; task_idx++) {
 		dn_gpu_task * t = my_tasks[task_idx];
@@ -721,7 +735,7 @@ void dn_init_detector(int argc, char **argv)
     fclose(fp);
     int classes = obj_count;
 
-    batch_size=32;
+    batch_size=2;
 
     net = parse_network_cfg(cfg, batch_size, quantized);    // parser.c
     if (weights) {
