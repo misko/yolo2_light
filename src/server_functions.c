@@ -23,6 +23,7 @@ pthread_mutex_t gpu_mutex;
 #define QUEUE_SIZE 32
 #define GPU_THREADS 2
 #define GPU_WAIT_MS 100000 //0.1s
+#define BATCH_SIZE 16
 
 pthread_t gpu_threads[GPU_THREADS];
 dn_gpu_task ** work_queue[QUEUE_SIZE];
@@ -81,7 +82,7 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 			//pthread_mutex_lock(&work_queue_lock);
 		}
 	}
-	fprintf(stderr,"WORK QUEUE USED TASK %d\n",work_queue_used);
+	//fprintf(stderr,"WORK QUEUE USED TASK %d\n",work_queue_used);
 
 	//CRITICAL REGION
 	int tasks_to_take=0;
@@ -95,7 +96,7 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 
 	dn_gpu_task ** my_tasks = (dn_gpu_task**)malloc(sizeof(dn_gpu_task)*tasks_to_take);
 	for (int i=0; i<tasks_to_take; i++) {
-		fprintf(stdout,"TAKING TASKS %d\n",(work_queue_first_used+i)%QUEUE_SIZE);
+		//fprintf(stdout,"TAKING TASKS %d\n",(work_queue_first_used+i)%QUEUE_SIZE);
 		my_tasks[i]=work_queue[(work_queue_first_used+i)%QUEUE_SIZE];
 	}
 	*number_of_tasks=tasks_to_take;
@@ -722,7 +723,7 @@ void dn_init_detector(int argc, char **argv)
     fclose(fp);
     int classes = obj_count;
 
-    batch_size=2;
+    batch_size=BATCH_SIZE;
 
     net = parse_network_cfg(cfg, batch_size, quantized);    // parser.c
     if (weights) {
