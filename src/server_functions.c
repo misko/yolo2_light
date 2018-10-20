@@ -19,8 +19,8 @@ static int quantized;
 pthread_mutex_t gpu_mutex; 
 
 #define MAX_TASKS 16
-#define QUEUE_SIZE 32
-#define GPU_THREADS 2
+#define QUEUE_SIZE 512
+#define GPU_THREADS 4
 
 pthread_t gpu_threads[GPU_THREADS];
 dn_gpu_task ** work_queue[QUEUE_SIZE];
@@ -44,7 +44,7 @@ int dn_enqueue(dn_gpu_task* t) {
 	//CRITICAL REGION
 	
 	if (work_queue_used==QUEUE_SIZE) {
-		fprintf(stderr,"WORK QUEUE IS FULL!\n");
+		fprintf(stdout,"WORK QUEUE IS FULL!\n");
 		pthread_mutex_unlock(&work_queue_lock);
 		return -1;
 	}
@@ -52,7 +52,7 @@ int dn_enqueue(dn_gpu_task* t) {
 	work_queue[(work_queue_first_used+work_queue_used)%QUEUE_SIZE]=t;
 
 	work_queue_used=work_queue_used+1;
-	fprintf(stderr,"QUEUE HAS %d\n",work_queue_used);	
+	//fprintf(stderr,"QUEUE HAS %d\n",work_queue_used);	
 	//END CRITICAL REGION
 	pthread_cond_broadcast(&cond_data_waiting);
 	
@@ -69,15 +69,15 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 
 	//wait for some data
 	while (work_queue_used<=0) {
-		fprintf(stderr,"SPOOLING FOR GPU\n");
+		//fprintf(stderr,"SPOOLING FOR GPU\n");
 		pthread_cond_wait(&cond_data_waiting, &work_queue_lock);
 	}
-	fprintf(stderr,"WORK QUEUE USED %d\n",work_queue_used);
+	fprintf(stderr,"WORK QUEUE USED TASK %d\n",work_queue_used);
 
 	//CRITICAL REGION
 	int tasks_to_take=0;
 	int used_in_this_batch=0;
-	while (tasks_to_take<MAX_TASKS && (work_queue_used-tasks_to_take)>0) {
+	while (tasks_to_take<MAX_TASKS && (work_queue_used-tasks_to_take)>0 && used_in_this_batch<2*batch_size) {
 		dn_gpu_task * next_task = work_queue[(work_queue_first_used+tasks_to_take)%QUEUE_SIZE];
 		//add this one to the batch
 		used_in_this_batch+=next_task->number_of_images;
@@ -86,6 +86,7 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 
 	dn_gpu_task ** my_tasks = (dn_gpu_task**)malloc(sizeof(dn_gpu_task)*tasks_to_take);
 	for (int i=0; i<tasks_to_take; i++) {
+		fprintf(stdout,"TAKING TASKS %d\n",(work_queue_first_used+i)%QUEUE_SIZE);
 		my_tasks[i]=work_queue[(work_queue_first_used+i)%QUEUE_SIZE];
 	}
 	*number_of_tasks=tasks_to_take;
@@ -349,13 +350,13 @@ void * dn_detector_worker(void * x)  {
     while (1) {
 	//lets get a batch
 	int number_of_tasks=0;
-    	fprintf(stderr,"SERVER THREAD DEQUEUE WAIT\n");
+    	//fprintf(stderr,"SERVER THREAD DEQUEUE WAIT\n");
 	dn_gpu_task ** my_tasks = dn_dequeue(&number_of_tasks);	
 	if (number_of_tasks==0) {
 		fprintf(stderr,"that was weird\n");
 		continue;
 	}
-    	fprintf(stderr,"SERVER THREAD DEQUEUED\n");
+    	//fprintf(stderr,"SERVER THREAD DEQUEUED\n");
 
 	//find out how many images we have
 	int images_to_process=0;
@@ -368,7 +369,7 @@ void * dn_detector_worker(void * x)  {
 	int last_image=0;
 	int images_processed=0;
 
-    	fprintf(stderr,"SERVER THREAD PROCESSING\n");
+    	//fprintf(stderr,"SERVER THREAD PROCESSING\n");
 	while (images_processed<images_to_process) {
 		//zero the input buffer
 		memset(X,0,sizeof(float)*image_size*batch_size);
@@ -384,7 +385,7 @@ void * dn_detector_worker(void * x)  {
 		//now copy the input data to our buffer
 		for (int i=0; i<images_in_this_batch;) {
 			dn_gpu_task * t = my_tasks[last_task]; //get the task at hand
-			fprintf(stderr,"CHECKING TASK %d %p , image_dets %p\n",i,t,t->image_dets);
+			//fprintf(stderr,"CHECKING TASK %d %p , image_dets %p\n",i,t,t->image_dets);
 			int images_to_load=0;
 			if ((t->number_of_images-last_image)<=(images_in_this_batch-i)) {
 				//load the rest of the task
@@ -393,11 +394,11 @@ void * dn_detector_worker(void * x)  {
 				//load only part of it
 				images_to_load = images_in_this_batch - i;
 			}	
-			fprintf(stderr,"IMAGES TO LOAD %d\n",images_to_load);
+			//fprintf(stderr,"IMAGES TO LOAD %d\n",images_to_load);
 			//copy the inputs and the output pointers
 			memcpy(X+i*image_size,t->X+last_image*image_size,images_to_load*image_size*sizeof(float));
 			for (int j=0; j<images_to_load; j++) {
-				fprintf(stderr,"image_dets[%d]=%p\n",i+j,t->image_dets+last_image+i+j);
+				//fprintf(stderr,"image_dets[%d]=%p\n",i+j,t->image_dets+last_image+i+j);
 				image_dets[i+j]=t->image_dets+last_image+j;
 			}
 
@@ -411,7 +412,7 @@ void * dn_detector_worker(void * x)  {
 
 		//lets try to grab that network gpu
 		pthread_mutex_lock(&gpu_mutex);
-		fprintf(stderr,"GOT TO THE GPU!\n");
+		//fprintf(stderr,"GOT TO THE GPU!\n");
 		//run the network
 #ifdef GPU
 		if (quantized) {
@@ -436,7 +437,7 @@ void * dn_detector_worker(void * x)  {
 #endif
 
         	layer l = net.layers[net.n - 1];
-		fprintf(stderr,"GOT TO THE GPU! - DONE\n");
+		//fprintf(stderr,"GOT TO THE GPU! - DONE\n");
 
 
 		for (int b=0; b<images_in_this_batch; b++) {
@@ -445,7 +446,7 @@ void * dn_detector_worker(void * x)  {
 			detection *dets = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, b );
 			if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
 			//draw_detections_v3(resized_images[i], dets, nboxes, thresh, names, l.classes, ext_output);
-			fprintf(stderr,"image_dets %p, b %d, image_dets[b] %p\n",image_dets, b,image_dets[b]);
+			//fprintf(stderr,"image_dets %p, b %d, image_dets[b] %p\n",image_dets, b,image_dets[b]);
 			*image_dets[b]=dets;
 
 			//free_image(resized_images[i]);                    // image.c
@@ -457,6 +458,7 @@ void * dn_detector_worker(void * x)  {
 		//free(X);
 		
 		images_processed+=images_in_this_batch;
+    		fprintf(stderr,"SERVER THREAD PROCESSING - images_in_this_batch -DONE %d\n",images_in_this_batch);
 	}
 	for (int task_idx=0; task_idx<number_of_tasks; task_idx++) {
 		dn_gpu_task * t = my_tasks[task_idx];
@@ -719,7 +721,8 @@ void dn_init_detector(int argc, char **argv)
     fclose(fp);
     int classes = obj_count;
 
-    batch_size=2;
+    batch_size=32;
+
     net = parse_network_cfg(cfg, batch_size, quantized);    // parser.c
     if (weights) {
         load_weights_upto_cpu(&net, weights, net.n);    // parser.c
