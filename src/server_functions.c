@@ -76,9 +76,9 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 		pthread_cond_wait(&cond_data_waiting, &work_queue_lock);
 		if (work_queue_used>0) {
 			//first data lets wait a tiny bit longer to see if we can grab more data in this batch
-			pthread_mutex_unlock(&work_queue_lock);
-			usleep(GPU_WAIT_MS);
-			pthread_mutex_lock(&work_queue_lock);
+			//pthread_mutex_unlock(&work_queue_lock);
+			//usleep(GPU_WAIT_MS);
+			//pthread_mutex_lock(&work_queue_lock);
 		}
 	}
 	fprintf(stderr,"WORK QUEUE USED TASK %d\n",work_queue_used);
@@ -448,23 +448,16 @@ void * dn_detector_worker(void * x)  {
         	layer l = net.layers[net.n - 1];
 		//fprintf(stderr,"GOT TO THE GPU! - DONE\n");
 
-
 		for (int b=0; b<images_in_this_batch; b++) {
 			float hier_thresh = 0.5;
 			int ext_output = 1, letterbox = 0, nboxes = 0;
-			detection *dets = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, b );
-			if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
-			//draw_detections_v3(resized_images[i], dets, nboxes, thresh, names, l.classes, ext_output);
-			//fprintf(stderr,"image_dets %p, b %d, image_dets[b] %p\n",image_dets, b,image_dets[b]);
-			*image_dets[b]=dets;
-
-			//free_image(resized_images[i]);                    // image.c
-			//free_detections(dets, nboxes);
+			*image_degs[b] = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, b );
 		}
 		pthread_mutex_unlock(&gpu_mutex);
 
-		//processing_index+=images_in_this_batch;
-		//free(X);
+		for (int b=0; b<images_in_this_batch; b++) {
+			if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
+		}
 		
 		images_processed+=images_in_this_batch;
 	}
