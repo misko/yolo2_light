@@ -729,6 +729,10 @@ void dn_init_detector(int argc, char **argv)
     FILE* fp;
     char buffer[255];
     fp = fopen(obj_names, "r");
+    if (fp==NULL) {
+	fprintf(stderr,"Filaed to open file %s\n",obj_names);
+exit(1);
+	}
     while (fgets(buffer, 255, (FILE*)fp)) {
         names[obj_count] = calloc(strlen(buffer)+1, sizeof(char));
         strcpy(names[obj_count], buffer);
