@@ -86,18 +86,11 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 	}
 
 
-	//wait for some data
+	//wait from the gate keeper
+	pthread_cond_wait(&cond_data_waiting, &work_queue_lock);
 	while (work_queue_used<=0) {
-		//fprintf(stderr,"SPOOLING FOR GPU\n");
 		pthread_cond_wait(&cond_data_waiting, &work_queue_lock);
-		if (work_queue_used>0) {
-			//first data lets wait a tiny bit longer to see if we can grab more data in this batch
-			//pthread_mutex_unlock(&work_queue_lock);
-			//usleep(GPU_WAIT_MS);
-			//pthread_mutex_lock(&work_queue_lock);
-		}
 	}
-	//fprintf(stderr,"WORK QUEUE USED TASK %d\n",work_queue_used);
 
 	//CRITICAL REGION
 	int tasks_to_take=0;
