@@ -20,9 +20,11 @@ static int quantized;
 pthread_mutex_t gpu_mutex; 
 
 #define MAX_TASKS 16
+#define MAX_IMAGES_PER_GO 32
 #define QUEUE_SIZE 512
-#define GPU_THREADS 4
-#define GPU_WAIT_MS 100000 //0.1s
+#define GPU_THREADS 2
+#define GPU_WAIT_MS 100000 //0.3s
+#define GPU_GATEKEEPER_WAIT_MS 100000 //0.1s
 #define BATCH_SIZE 16
 
 pthread_t gpu_threads[GPU_THREADS];
@@ -30,8 +32,9 @@ pthread_t gate_keeper_thread;;
 dn_gpu_task ** work_queue[QUEUE_SIZE];
 int work_queue_first_used=0;
 int work_queue_used=0;
+int gpu_worker_allowed=0;
 pthread_mutex_t work_queue_lock; 
-pthread_cond_t cond_data_waiting;
+pthread_cond_t cond_gpu_worker_allowed;
 
 
 
@@ -58,7 +61,7 @@ int dn_enqueue(dn_gpu_task* t) {
 	work_queue_used=work_queue_used+1;
 	//fprintf(stderr,"QUEUE HAS %d\n",work_queue_used);	
 	//END CRITICAL REGION
-	//pthread_cond_broadcast(&cond_data_waiting);
+	//pthread_cond_broadcast(&cond_gpu_worker_allowed);
 	
 	pthread_mutex_unlock(&work_queue_lock);
 	return 0;
@@ -67,13 +70,15 @@ int dn_enqueue(dn_gpu_task* t) {
 void * dn_gate_keeper(void * x) {
 	int waits=0;
 	while (1) {
-		usleep(GPU_WAIT_MS/2);
-		if (work_queue_used>0) {
-			waits++;
-		}
-		if (waits>=4) {
-			pthread_cond_signal(&cond_data_waiting);
-			waits=-1;
+		usleep(GPU_GATEKEEPER_WAIT_MS);
+		if (gpu_worker_allowed==0 && work_queue_used>0) {
+			fprintf(stderr,"BIG SLEEP\n");
+			usleep(GPU_WAIT_MS);
+			gpu_worker_allowed=1;
+			while (gpu_worker_allowed==1) {
+				pthread_cond_signal(&cond_gpu_worker_allowed);
+				usleep(GPU_GATEKEEPER_WAIT_MS);
+			}
 		}
 	}
 }
@@ -87,15 +92,15 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 
 
 	//wait from the gate keeper
-	pthread_cond_wait(&cond_data_waiting, &work_queue_lock);
-	while (work_queue_used<=0) {
-		pthread_cond_wait(&cond_data_waiting, &work_queue_lock);
+	pthread_cond_wait(&cond_gpu_worker_allowed, &work_queue_lock);
+	while (gpu_worker_allowed==0) {
+		pthread_cond_wait(&cond_gpu_worker_allowed, &work_queue_lock);
 	}
 
 	//CRITICAL REGION
 	int tasks_to_take=0;
 	int used_in_this_batch=0;
-	while (tasks_to_take<MAX_TASKS && (work_queue_used-tasks_to_take)>0 && used_in_this_batch<2*batch_size) {
+	while (tasks_to_take<MAX_TASKS && (work_queue_used-tasks_to_take)>0 && used_in_this_batch<MAX_IMAGES_PER_GO) {
 		dn_gpu_task * next_task = work_queue[(work_queue_first_used+tasks_to_take)%QUEUE_SIZE];
 		//add this one to the batch
 		used_in_this_batch+=next_task->number_of_images;
@@ -112,7 +117,7 @@ dn_gpu_task * dn_dequeue(int * number_of_tasks) {
 	work_queue_used-=tasks_to_take;
 	
 	//END CRITICAL REGION
-	
+	gpu_worker_allowed=0;
 	pthread_mutex_unlock(&work_queue_lock);
 
 	return my_tasks;
@@ -398,7 +403,7 @@ void * dn_detector_worker(void * x)  {
 		if (images_in_this_batch>batch_size) {
 			images_in_this_batch=batch_size;
 		}
-    		fprintf(stderr,"SERVER THREAD PROCESSING - images_in_this_batch %d\n",images_in_this_batch);
+    		fprintf(stderr,"SERVER THREAD PROCESSING - images_in_this_batch %d - (%d/%d)\n",images_in_this_batch,images_processed,images_to_process);
 
 		//now copy the input data to our buffer
 		for (int i=0; i<images_in_this_batch;) {
@@ -434,6 +439,7 @@ void * dn_detector_worker(void * x)  {
 		//run the network
 #ifdef GPU
 		if (quantized) {
+			fprintf(stderr,"QUANIZED\n");
 			network_predict_gpu_cudnn_quantized(net, X);    // quantized works only with Yolo v2
 			//nms = 0.2;
 		}
@@ -676,7 +682,7 @@ void dn_init_detector(int argc, char **argv)
 		printf("\n mutex init has failed\n"); 
 		exit(1); 
 	} 
-	if ( pthread_cond_init(&cond_data_waiting, NULL)!=0)
+	if ( pthread_cond_init(&cond_gpu_worker_allowed, NULL)!=0)
 	{
 		printf("\n cond init has failed\n"); 
 		exit(1); 
