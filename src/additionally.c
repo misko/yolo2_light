@@ -203,7 +203,7 @@ void binary_align_weights(convolutional_layer *l)
     binarize_weights(l->weights, m, k, l->binary_weights);
 
     size_t align_weights_size = new_lda * m;
-    l->align_bit_weights_size = align_weights_size / 8;// +1;
+    l->align_bit_weights_size = align_weights_size / 8 + 1;
     float *align_weights = calloc(align_weights_size, sizeof(float));
     l->align_bit_weights = calloc(l->align_bit_weights_size, sizeof(char));
 
@@ -279,6 +279,7 @@ static inline unsigned char get_bit(unsigned char const*const src, size_t index)
     return val;
 }
 
+/*
 static inline unsigned char reverse_byte_1(char a)
 {
     return ((a & 0x1) << 7) | ((a & 0x2) << 5) |
@@ -342,11 +343,99 @@ void transpose_bin(char *A, char *B, const int n, const int m,
         }
     }
 }
+*/
+
+uint8_t reverse_8_bit(uint8_t a) {
+    return ((a * 0x0802LU & 0x22110LU) | (a * 0x8020LU & 0x88440LU)) * 0x10101LU >> 16;
+}
+
+uint32_t reverse_32_bit(uint32_t a)
+{
+    // unsigned int __rbit(unsigned int val) // for ARM    //__asm__("rbit %0, %1\n" : "=r"(output) : "r"(input));
+    return (reverse_8_bit(a >> 24) << 0) |
+        (reverse_8_bit(a >> 16) << 8) |
+        (reverse_8_bit(a >> 8) << 16) |
+        (reverse_8_bit(a >> 0) << 24);
+}
+
+#define swap(a0, a1, j, m) t = (a0 ^ (a1 >>j)) & m; a0 = a0 ^ t; a1 = a1 ^ (t << j);
+
+void transpose32_optimized(uint32_t A[32]) {
+    int j, k;
+    unsigned m, t;
+
+    //m = 0x0000FFFF;
+    //for (j = 16; j != 0; j = j >> 1, m = m ^ (m << j)) {
+    //    for (k = 0; k < 32; k = (k + j + 1) & ~j) {
+    //        t = (A[k] ^ (A[k + j] >> j)) & m;
+    //        A[k] = A[k] ^ t;
+    //        A[k + j] = A[k + j] ^ (t << j);
+    //    }
+    //}
+
+    j = 16;
+    m = 0x0000FFFF;
+    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
+
+    j = 8;
+    m = 0x00ff00ff;
+    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
+
+    j = 4;
+    m = 0x0f0f0f0f;
+    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
+
+    j = 2;
+    m = 0x33333333;
+    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
+
+    j = 1;
+    m = 0x55555555;
+    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
+
+    // reverse Y
+    for (j = 0; j < 16; ++j) {
+        uint32_t tmp = A[j];
+        A[j] = reverse_32_bit(A[31 - j]);
+        A[31 - j] = reverse_32_bit(tmp);
+    }
+}
+
+void transpose_32x32_bits_reversed_diagonale(uint32_t *A, uint32_t *B, int m, int n)
+{
+    unsigned A_tmp[32];
+    int i;
+    #pragma unroll
+    for (i = 0; i < 32; ++i) A_tmp[i] = A[i * m];
+    transpose32_optimized(A_tmp);
+    #pragma unroll
+    for (i = 0; i < 32; ++i) B[i*n] = A_tmp[i];
+}
+
+// transpose by 32-bit
+void transpose_bin(uint32_t *A, uint32_t *B, const int n, const int m,
+    const int lda, const int ldb, const int block_size)
+{
+    int i;
+    #pragma omp parallel for
+    for (i = 0; i < n; i += 32) {
+        int j;
+        for (j = 0; j < m; j += 32) {
+            int a_index = i*lda + j;
+            int b_index = j*ldb + i;
+            transpose_32x32_bits_reversed_diagonale(&A[a_index / 32], &B[b_index / 32], lda / 32, ldb / 32);
+            //transpose_32x32_bits_my(&A[a_index/32], &B[b_index/32], lda/32, ldb/32);
+        }
+        for (; j < m; ++j) {
+            if (get_bit(A, i*lda + j)) set_bit(B, j*ldb + i);
+        }
+    }
+}
 
 // -------------- blas.c --------------
 
 
-#ifdef AVX
+#ifdef AVX1
 
 #ifdef _WIN64
 // Windows
@@ -1089,6 +1178,26 @@ void forward_maxpool_layer_avx(float *src, float *dst, int *indexes, int size, i
     }
 }
 
+static inline int popcnt_64(uint64_t val64) {
+#ifdef WIN32  // Windows
+#ifdef _WIN64 // Windows 64-bit
+    int tmp_count = __popcnt64(val64);
+#else         // Windows 32-bit
+    int tmp_count = __popcnt(val64);
+    tmp_count += __popcnt(val64 >> 32);
+#endif
+#else   // Linux
+#ifdef __x86_64__  // Linux 64-bit
+    int tmp_count = __builtin_popcountll(val64);
+#else  // Linux 32-bit
+    int tmp_count = __builtin_popcount(val64);
+    tmp_count += __builtin_popcount(val64);
+#endif
+#endif
+    return tmp_count;
+}
+
+
 void gemm_nn_custom_bin_mean_transposed(int M, int N, int K, float ALPHA_UNUSED,
     unsigned char *A, int lda,
     unsigned char *B, int ldb,
@@ -1096,7 +1205,7 @@ void gemm_nn_custom_bin_mean_transposed(int M, int N, int K, float ALPHA_UNUSED,
 {
     int i, j, k, h;
 
-#pragma omp parallel for
+    #pragma omp parallel for
     for (i = 0; i < M; ++i) {   // l.n - filters [16 - 55 - 1024]
         float mean_val = mean_arr[i];
 
@@ -1108,11 +1217,7 @@ void gemm_nn_custom_bin_mean_transposed(int M, int N, int K, float ALPHA_UNUSED,
                 uint64_t b_bit64 = *((uint64_t *)(B + (j*ldb + k) / 8));
                 uint64_t c_bit64 = xnor_int64(a_bit64, b_bit64);
 
-#ifdef WIN32
-                int tmp_count = __popcnt64(c_bit64);
-#else
-                int tmp_count = __builtin_popcountll(c_bit64);
-#endif
+                int tmp_count = popcnt_64(c_bit64);
 
                 if (K - k < 64)  tmp_count = tmp_count - (64 - (K - k));    // remove extra bits
                 count += tmp_count;
@@ -1683,16 +1788,23 @@ void cudnn_convolutional_setup(layer *l)
 {
 #if(CUDNN_MAJOR >= 7)
     cudnnSetConvolutionMathType(l->convDesc, CUDNN_TENSOR_OP_MATH);
+#if((CUDNN_MAJOR*10 + CUDNN_MINOR) >= 72)   // cuDNN >= 7.2
+    cudnnSetConvolutionMathType(l->convDesc, CUDNN_TENSOR_OP_MATH_ALLOW_CONVERSION);
+#endif  //(CUDNN_MAJOR >= 7.2)
 #endif  //(CUDNN_MAJOR >= 7)
 
     if (l->quantized)
     {
-        cudnnDataType_t data_type = CUDNN_DATA_INT8x4;
+        cudnnDataType_t cudnn_data_type = CUDNN_DATA_INT8x4;
         cudnnTensorFormat_t tensor_format = CUDNN_TENSOR_NCHW_VECT_C;
         cudnnTensorFormat_t dst_tensor_format = CUDNN_TENSOR_NCHW;
 
-        cudnnSetTensor4dDescriptor(l->srcTensorDesc, CUDNN_TENSOR_NCHW_VECT_C, CUDNN_DATA_INT8x4, l->batch, l->c, l->h, l->w);
-        cudnnSetFilter4dDescriptor(l->weightDesc, CUDNN_DATA_INT8x4, CUDNN_TENSOR_NCHW_VECT_C, l->n, l->c, l->size, l->size);
+#if((CUDNN_MAJOR*10 + CUDNN_MINOR) >= 72)
+        //if (l->c % 32 == 0) cudnn_data_type = CUDNN_DATA_INT8x32;   // Tensor Cores for INT8
+#endif  //(CUDNN_MAJOR >= 7.2)
+
+        cudnnSetTensor4dDescriptor(l->srcTensorDesc, CUDNN_TENSOR_NCHW_VECT_C, cudnn_data_type, l->batch, l->c, l->h, l->w);
+        cudnnSetFilter4dDescriptor(l->weightDesc, cudnn_data_type, CUDNN_TENSOR_NCHW_VECT_C, l->n, l->c, l->size, l->size);
         cudnnSetTensor4dDescriptor(l->dstTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->out_c, l->out_h, l->out_w);
         cudnnSetConvolution2dDescriptor(l->convDesc, l->pad, l->pad, l->stride, l->stride, 1, 1, CUDNN_CROSS_CORRELATION, CUDNN_DATA_INT32);    // cudnn 7
 
@@ -1723,6 +1835,8 @@ void cudnn_convolutional_setup(layer *l)
             CUDNN_CONVOLUTION_FWD_PREFER_FASTEST,
             0,
             &l->fw_algo);
+
+        //l->fw_algo = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM; // un-comment to use Tensor Cores for cuDNN >= 7.2
     }
 }
 #endif
@@ -1781,6 +1895,8 @@ void free_layer(layer l)
     //if (l.scale_updates)      free(l.scale_updates);
     if (l.weights)            free(l.weights);
     if (l.weights_int8)       free(l.weights_int8);
+    if (l.align_bit_weights)  free(l.align_bit_weights);
+    if (l.mean_arr)           free(l.mean_arr);
     //if (l.weight_updates)     free(l.weight_updates);
     //if (l.delta)              free(l.delta);
     if (l.output)             free(l.output);
@@ -1831,6 +1947,12 @@ void free_layer(layer l)
     if (l.mean_delta_gpu)          cuda_free(l.mean_delta_gpu);
     if (l.x_gpu)                   cuda_free(l.x_gpu);
     if (l.x_norm_gpu)              cuda_free(l.x_norm_gpu);
+
+    if (l.align_bit_weights_gpu)   cuda_free(l.align_bit_weights_gpu);
+    if (l.mean_arr_gpu)            cuda_free(l.mean_arr_gpu);
+    if (l.align_workspace_gpu)     cuda_free(l.align_workspace_gpu);
+    if (l.transposed_align_workspace_gpu) cuda_free(l.transposed_align_workspace_gpu);
+
     if (l.weights_gpu)             cuda_free(l.weights_gpu);
     //if (l.weight_updates_gpu)      cuda_free(l.weight_updates_gpu);
     if (l.biases_gpu)              cuda_free(l.biases_gpu);
@@ -3863,17 +3985,19 @@ int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh,
         for (n = 0; n < l.n; ++n) {
             int obj_index = entry_index(l, 0, n*l.w*l.h + i, 4);
             float objectness = predictions[obj_index];
-            if (objectness <= thresh) continue;
-            int box_index = entry_index(l, 0, n*l.w*l.h + i, 0);
-            dets[count].bbox = get_yolo_box(predictions, l.biases, l.mask[n], box_index, col, row, l.w, l.h, netw, neth, l.w*l.h);
-            dets[count].objectness = objectness;
-            dets[count].classes = l.classes;
-            for (j = 0; j < l.classes; ++j) {
-                int class_index = entry_index(l, 0, n*l.w*l.h + i, 4 + 1 + j);
-                float prob = objectness*predictions[class_index];
-                dets[count].prob[j] = (prob > thresh) ? prob : 0;
+            //if (objectness <= thresh) continue;   // incorrect behavior for Nan values
+            if (objectness > thresh) {
+                int box_index = entry_index(l, 0, n*l.w*l.h + i, 0);
+                dets[count].bbox = get_yolo_box(predictions, l.biases, l.mask[n], box_index, col, row, l.w, l.h, netw, neth, l.w*l.h);
+                dets[count].objectness = objectness;
+                dets[count].classes = l.classes;
+                for (j = 0; j < l.classes; ++j) {
+                    int class_index = entry_index(l, 0, n*l.w*l.h + i, 4 + 1 + j);
+                    float prob = objectness*predictions[class_index];
+                    dets[count].prob[j] = (prob > thresh) ? prob : 0;
+                }
+                ++count;
             }
-            ++count;
         }
     }
     correct_yolo_boxes(dets, count, w, h, netw, neth, relative, letter);
