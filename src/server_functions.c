@@ -131,6 +131,10 @@ dn_gpu_task * dn_create_task(int number_of_images) {
 		exit(1);
 	}
 	t->number_of_images=number_of_images;
+	t->nboxes=(int*)calloc(1,sizeof(int)*number_of_images);
+	if (t->nboxes==NULL) {
+		fprintf(stderr,"out of memory\n");
+	}
 	//t->X=NULL; //done by calloc
 	if (pthread_mutex_init(&(t->cv_mutex), NULL) != 0)  { 
 		printf("\n mutex init has failed\n"); 
@@ -147,14 +151,12 @@ dn_gpu_task * dn_create_task(int number_of_images) {
 void dn_destroy_task(dn_gpu_task*t) {
 	pthread_mutex_destroy(&(t->cv_mutex));
 	pthread_cond_destroy(&(t->cv));
+	free(t->nboxes);
 	free(t->image_dets);
 	free(t);
 }
 
 
-int dn_get_nboxes() {
-	return num_detections(&net,thresh);
-}
 
 // get prediction boxes: yolov2_forward_network.c
 void get_region_boxes_cpu(layer l, int w, int h, float thresh, float **probs, box *boxes, int only_objectness, int *map);
@@ -328,16 +330,15 @@ void dn_free_images(image * images, unsigned int number_of_images) {
 
 // --------------- Detect on the Image ---------------
 
-void dn_draw_detections(image im,detection * dets) {
-	draw_detections_v3(im, dets, dn_get_nboxes(), thresh, names, 6, 1);
+void dn_draw_detections(image im,detection * dets, int nboxes) {
+	draw_detections_v3(im, dets, nboxes, thresh, names, 6, 1);
 }
 
 void dn_save_image(image im, char * filename) {
 	save_image_png(im, filename);    // image.c
 }
 
-void dn_free_detections(detection ** image_dets, unsigned int number_of_images) {
-	int nboxes = dn_get_nboxes();
+void dn_free_detections(detection ** image_dets, int nboxes, unsigned int number_of_images) {
 	for (int n=0; n<number_of_images; n++) {
 		free_detections(image_dets[n],nboxes);
 	}
@@ -363,6 +364,11 @@ void * dn_detector_worker(void * x)  {
 	fprintf(stderr,"Failed to malloc memory for image batch input buffer\n");
 	exit(1);
     }
+    int ** batch_nboxes = (int**)malloc(sizeof(int*)*batch_size);
+    if (batch_nboxes==NULL) {
+	fprintf(stderr,"FAILED MALLOC\n");
+	exit(1);
+    }	
 
     fprintf(stderr,"SERVER THREAD READY image_dets %p\n",image_dets);
     while (1) {
@@ -391,7 +397,8 @@ void * dn_detector_worker(void * x)  {
 	while (images_processed<images_to_process) {
 		//zero the input buffer
 		memset(X,0,sizeof(float)*image_size*batch_size);
-		memset(image_dets,0,sizeof(detection*)*batch_size);
+		memset(image_dets,0,sizeof(detection**)*batch_size);
+		memset(batch_nboxes,0,sizeof(int*)*batch_size);
 		
 		//find out how many images in this specific batch
 		int images_in_this_batch=(images_to_process-images_processed);
@@ -418,6 +425,7 @@ void * dn_detector_worker(void * x)  {
 			for (int j=0; j<images_to_load; j++) {
 				//fprintf(stderr,"image_dets[%d]=%p\n",i+j,t->image_dets+last_image+i+j);
 				image_dets[i+j]=t->image_dets+last_image+j;
+				batch_nboxes[i+j]=t->nboxes+last_image+j;
 			}
 
 			last_image+=images_to_load;
@@ -456,16 +464,15 @@ void * dn_detector_worker(void * x)  {
 
         	layer l = net.layers[net.n - 1];
 		//fprintf(stderr,"GOT TO THE GPU! - DONE\n");
-		int nboxes=0;
 		const float hier_thresh = 0.5;
 		const int ext_output = 1, letterbox = 0;
 		for (int b=0; b<images_in_this_batch; b++) {
-			*image_dets[b] = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, &nboxes, letterbox, b );
+			*image_dets[b] = get_network_boxes(&net, net.w, net.h, thresh, hier_thresh, 0, 1, batch_nboxes[b], letterbox, b );
 		}
 		pthread_mutex_unlock(&gpu_mutex);
 
 		for (int b=0; b<images_in_this_batch; b++) {
-			if (nms) do_nms_sort(*image_dets[b], nboxes, l.classes, nms);
+			if (nms) do_nms_sort(*image_dets[b], *batch_nboxes[b], l.classes, nms);
 		}
 		
 		images_processed+=images_in_this_batch;
@@ -575,7 +582,7 @@ void * dn_detector_worker(void * x)  {
     return image_dets;*/
 }
 // Detect on Image: this function uses other functions not from this file
-detection ** dn_run_detector(float * data, unsigned int number_of_images) 
+detection ** dn_run_detector(float * data, unsigned int number_of_images, int * result_nboxes) 
 {
 
     clock_t time;
@@ -647,6 +654,7 @@ detection ** dn_run_detector(float * data, unsigned int number_of_images)
 		save_image_png(resized_image, buffer);    // image.c*/
 
 		image_dets[processing_index+b]=dets;
+		result_nboxes[processing_index+b]=nboxes;
 
 		//free_image(resized_images[i]);                    // image.c
 		//free_detections(dets, nboxes);

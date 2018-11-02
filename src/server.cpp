@@ -46,14 +46,18 @@ int main(int argc, char **argv)
     image * resized_images = dn_resize_images(images,number_of_filenames);
     float * data = dn_images_to_data(resized_images,number_of_filenames);
 
-    int nboxes=dn_get_nboxes();
     char ** names = dn_get_names(); 
     for (int x=0; x<3; x++) {
-    	detection ** image_dets = dn_run_detector(data,number_of_filenames);
+	int * nboxes = (int*)malloc(sizeof(int)*number_of_filenames);
+	if (nboxes==NULL) {
+		fprintf(stderr,"Failed to amlloc \n");
+		exit(1);
+	}
+    	detection ** image_dets = dn_run_detector(data,number_of_filenames,nboxes);
 	for (int i=0; i<number_of_filenames; i++) {
 		fprintf(stderr,"output for image %d\n",i);
 		detection * dets = image_dets[i];
-		for (int d=0; d<nboxes; d++){
+		for (int d=0; d<nboxes[i]; d++){
 			for (int j=0; j<dets[d].classes; j++) {
 				if (dets[d].prob[j]>0.25) {
 					fprintf(stderr,"%s %0.2f\n",names[j],dets[d].prob[j]);
