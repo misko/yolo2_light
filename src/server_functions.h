@@ -44,7 +44,7 @@ char ** dn_get_names();
 int dn_get_nboxes();
 void dn_save_image(image im, char * filename);
 void dn_draw_detections(image im,detection * dets, int nboxes);
-void dn_free_detections(detection ** image_dets, int nboxes ,unsigned int number_of_images);
+void dn_free_detections(detection ** image_dets, int * nboxes ,unsigned int number_of_images);
 
 #ifdef __cplusplus
 }

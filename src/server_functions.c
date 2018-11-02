@@ -338,9 +338,9 @@ void dn_save_image(image im, char * filename) {
 	save_image_png(im, filename);    // image.c
 }
 
-void dn_free_detections(detection ** image_dets, int nboxes, unsigned int number_of_images) {
+void dn_free_detections(detection ** image_dets, int * nboxes, unsigned int number_of_images) {
 	for (int n=0; n<number_of_images; n++) {
-		free_detections(image_dets[n],nboxes);
+		free_detections(image_dets[n],nboxes[n]);
 	}
 }
 // Detect on Image: this function uses other functions not from this file
