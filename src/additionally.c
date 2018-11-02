@@ -3852,13 +3852,13 @@ int entry_index(layer l, int batch, int location, int entry)
     return batch*l.outputs + n*l.w*l.h*(4 + l.classes + 1) + entry*l.w*l.h + loc;
 }
 
-int yolo_num_detections(layer l, float thresh)
+int yolo_num_detections(layer l, float thresh, int batch_index)
 {
     int i, n;
     int count = 0;
     for (i = 0; i < l.w*l.h; ++i) {
         for (n = 0; n < l.n; ++n) {
-            int obj_index = entry_index(l, 0, n*l.w*l.h + i, 4);
+            int obj_index = entry_index(l, batch_index, n*l.w*l.h + i, 4);
             if (l.output[obj_index] > thresh) {
                 ++count;
             }
@@ -3867,14 +3867,14 @@ int yolo_num_detections(layer l, float thresh)
     return count;
 }
 
-int num_detections(network *net, float thresh)
+int num_detections(network *net, float thresh, int batch_index)
 {
     int i;
     int s = 0;
     for (i = 0; i < net->n; ++i) {
         layer l = net->layers[i];
         if (l.type == YOLO) {
-            s += yolo_num_detections(l, thresh);
+            s += yolo_num_detections(l, thresh, batch_index);
         }
         if (l.type == DETECTION || l.type == REGION) {
             s += l.w*l.h*l.n;
@@ -3883,11 +3883,11 @@ int num_detections(network *net, float thresh)
     return s;
 }
 
-detection *make_network_boxes(network *net, float thresh, int *num)
+detection *make_network_boxes(network *net, float thresh, int *num, int batch_index)
 {
     layer l = net->layers[net->n - 1];
     int i;
-    int nboxes = num_detections(net, thresh);
+    int nboxes = num_detections(net, thresh, batch_index);
     if (num) *num = nboxes;
     detection *dets = calloc(nboxes, sizeof(detection));
     for (i = 0; i < nboxes; ++i) {
@@ -3973,7 +3973,7 @@ box get_yolo_box(float *x, float *biases, int n, int index, int i, int j, int lw
 }
 
 // yolo_layer.c
-int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh, int *map, int relative, detection *dets, int letter)
+int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh, int *map, int relative, detection *dets, int letter, int batch_index)
 {
     int i, j, n;
     float *predictions = l.output;
@@ -3983,16 +3983,16 @@ int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh,
         int row = i / l.w;
         int col = i % l.w;
         for (n = 0; n < l.n; ++n) {
-            int obj_index = entry_index(l, 0, n*l.w*l.h + i, 4);
+            int obj_index = entry_index(l, batch_index, n*l.w*l.h + i, 4);
             float objectness = predictions[obj_index];
             //if (objectness <= thresh) continue;   // incorrect behavior for Nan values
             if (objectness > thresh) {
-                int box_index = entry_index(l, 0, n*l.w*l.h + i, 0);
+                int box_index = entry_index(l, batch_index, n*l.w*l.h + i, 0);
                 dets[count].bbox = get_yolo_box(predictions, l.biases, l.mask[n], box_index, col, row, l.w, l.h, netw, neth, l.w*l.h);
                 dets[count].objectness = objectness;
                 dets[count].classes = l.classes;
                 for (j = 0; j < l.classes; ++j) {
-                    int class_index = entry_index(l, 0, n*l.w*l.h + i, 4 + 1 + j);
+                    int class_index = entry_index(l, batch_index, n*l.w*l.h + i, 4 + 1 + j);
                     float prob = objectness*predictions[class_index];
                     dets[count].prob[j] = (prob > thresh) ? prob : 0;
                 }
@@ -4037,7 +4037,7 @@ void fill_network_boxes(network *net, int w, int h, float thresh, float hier, in
     for (j = 0; j < net->n; ++j) {
         layer l = net->layers[j];
         if (l.type == YOLO) {
-            int count = get_yolo_detections(l, w, h, net->w, net->h, thresh, map, relative, dets, letter);
+            int count = get_yolo_detections(l, w, h, net->w, net->h, thresh, map, relative, dets, letter, batch_index);
             dets += count;
         }
         if (l.type == REGION) {
@@ -4050,7 +4050,7 @@ void fill_network_boxes(network *net, int w, int h, float thresh, float hier, in
 
 detection *get_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, int *num, int letter, int batch_index)
 {
-    detection *dets = make_network_boxes(net, thresh, num);
+    detection *dets = make_network_boxes(net, thresh, num, batch_index);
     fill_network_boxes(net, w, h, thresh, hier, map, relative, dets, letter, batch_index);
     return dets;
 }

@@ -950,7 +950,7 @@ extern "C" {
     detection *get_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, int *num, int letter, int batch_index);
 
     // additiontally.c
-    int num_detections(network *net, float thresh);
+    int num_detections(network *net, float thresh, int batch_index);
 
     // additionally.c
     int entry_index(layer l, int batch, int location, int entry);
