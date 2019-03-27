@@ -1836,7 +1836,7 @@ void cudnn_convolutional_setup(layer *l)
             0,
             &l->fw_algo);
 
-        //l->fw_algo = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM; // un-comment to use Tensor Cores for cuDNN >= 7.2
+        l->fw_algo = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM; // un-comment to use Tensor Cores for cuDNN >= 7.2
     }
 }
 #endif
